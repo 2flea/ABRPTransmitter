@@ -30,6 +30,7 @@ public class Constants {
 
   public static final long INTERVAL_SEND_UPDATE = 5000L;
   public static final long INTERVAL_AVERAGE_COLLECTOR = 500L;
+  public static final int ROUTEPLAN_TIMEOUT = 5000;
 
   public static final String PREFERENCES_NAME = "preferences";
   public static final String PREFERENCES_TOKEN = "abrp_token";

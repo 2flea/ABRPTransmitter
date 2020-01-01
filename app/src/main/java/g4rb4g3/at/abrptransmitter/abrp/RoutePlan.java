@@ -1,12 +1,13 @@
 package g4rb4g3.at.abrptransmitter.abrp;
 
-import android.util.Log;
-
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.internal.bind.TypeAdapters;
 import com.loopj.android.http.AsyncHttpClient;
 import com.loopj.android.http.AsyncHttpResponseHandler;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -19,46 +20,49 @@ import static g4rb4g3.at.abrptransmitter.Constants.ABETTERROUTEPLANNER_API_KEY;
 import static g4rb4g3.at.abrptransmitter.Constants.ABETTERROUTEPLANNER_PLAN_URL;
 import static g4rb4g3.at.abrptransmitter.Constants.ABETTERROUTEPLANNER_URL_API_KEY;
 import static g4rb4g3.at.abrptransmitter.Constants.ABETTERROUTEPLANNER_URL_TOKEN;
+import static g4rb4g3.at.abrptransmitter.Constants.ROUTEPLAN_TIMEOUT;
 
 public class RoutePlan {
-  private static AsyncHttpClient asyncHttpClient;
-  private static RoutePlan instance;
-  private List<IRoutePlan> listeners = new ArrayList<>();
-  private Gson gson;
+  private static final Logger sLog = LoggerFactory.getLogger(RoutePlan.class.getSimpleName());
+
+  private static AsyncHttpClient sAsyncHttpClient;
+  private static RoutePlan sInstance;
+  private List<IRoutePlan> mListeners = new ArrayList<>();
+  private Gson mGson;
 
   private RoutePlan() {
-    asyncHttpClient = new AsyncHttpClient(true, 80, 443);
-    asyncHttpClient.setTimeout(5000);
+    sAsyncHttpClient = new AsyncHttpClient(true, 80, 443);
+    sAsyncHttpClient.setTimeout(ROUTEPLAN_TIMEOUT);
 
     GsonBuilder builder = new GsonBuilder();
     builder.registerTypeAdapterFactory(TypeAdapters.newFactory(double.class, Double.class, new DoubleTypeAdapter()));
-    gson = builder.create();
+    mGson = builder.create();
   }
 
   public static RoutePlan getInstance() {
-    if (instance == null) {
-      instance = new RoutePlan();
+    if (sInstance == null) {
+      sInstance = new RoutePlan();
     }
-    return instance;
+    return sInstance;
   }
 
   public void addListener(IRoutePlan listener) {
-    this.listeners.add(listener);
+    this.mListeners.add(listener);
   }
 
   public void removeListener(IRoutePlan listener) {
-    this.listeners.remove(listener);
+    this.mListeners.remove(listener);
   }
 
   private void parsePlanResponse(byte[] responseBody) {
     try {
-      GsonRoutePlan gsonRoute = gson.fromJson(new String(responseBody), GsonRoutePlan.class);
-      for (IRoutePlan listener : listeners) {
+      GsonRoutePlan gsonRoute = mGson.fromJson(new String(responseBody), GsonRoutePlan.class);
+      for (IRoutePlan listener : mListeners) {
         listener.planReady(gsonRoute);
       }
     } catch (Exception e) {
-      Log.d("ABRPTransmitter", "Failed to parse JSON: " + e.toString());
-      for (IRoutePlan listener : listeners) {
+      sLog.error("Failed to parse JSON", e);
+      for (IRoutePlan listener : mListeners) {
         listener.planFailed();
       }
     }
@@ -66,14 +70,9 @@ public class RoutePlan {
 
   public void requestPlan(String userToken) {
     StringBuilder url = new StringBuilder(ABETTERROUTEPLANNER_PLAN_URL)
-        .append(ABETTERROUTEPLANNER_URL_TOKEN)
-        .append("=").append(userToken)
-        .append("&")
-        .append(ABETTERROUTEPLANNER_URL_API_KEY)
-        .append("=")
-        .append(ABETTERROUTEPLANNER_API_KEY);
-    Log.d("ABRPTransmitter", url.toString());
-    asyncHttpClient.get(url.toString(), new AsyncHttpResponseHandler() {
+        .append(ABETTERROUTEPLANNER_URL_TOKEN).append("=").append(userToken)
+        .append("&").append(ABETTERROUTEPLANNER_URL_API_KEY).append("=").append(ABETTERROUTEPLANNER_API_KEY);
+    sAsyncHttpClient.get(url.toString(), new AsyncHttpResponseHandler() {
 
       @Override
       public void onSuccess(int statusCode, Header[] headers, byte[] responseBody) {
@@ -82,8 +81,8 @@ public class RoutePlan {
 
       @Override
       public void onFailure(int statusCode, Header[] headers, byte[] responseBody, Throwable error) {
-        Log.e("ABRPTransmitter", String.valueOf(statusCode), error);
-        for (IRoutePlan listener : listeners) {
+        sLog.error("failed to load plan, status code: " + statusCode, error);
+        for (IRoutePlan listener : mListeners) {
           listener.planFailed();
         }
       }
@@ -92,7 +91,6 @@ public class RoutePlan {
       public boolean getUseSynchronousMode() {
         return false;
       }
-
     });
   }
 }
