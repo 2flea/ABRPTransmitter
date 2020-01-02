@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
 import androidx.annotation.Nullable;
@@ -37,14 +38,21 @@ import static g4rb4g3.at.abrptransmitter.Constants.ACTION_GPS_CHANGED;
 import static g4rb4g3.at.abrptransmitter.Constants.EXTRA_ALT;
 import static g4rb4g3.at.abrptransmitter.Constants.EXTRA_LAT;
 import static g4rb4g3.at.abrptransmitter.Constants.EXTRA_LON;
-import static g4rb4g3.at.abrptransmitter.Constants.INTERVAL_SEND_UPDATE;
 import static g4rb4g3.at.abrptransmitter.Constants.NOTIFICATION_ID_ABRPCONSUMPTIONSERVICE;
 import static g4rb4g3.at.abrptransmitter.Constants.PREFERENCES_NAME;
 import static g4rb4g3.at.abrptransmitter.Constants.PREFERENCES_TOKEN;
 
 public class AbrpConsumptionService extends Service implements IRoutePlan {
+  private static final ArrayList<Location> DEMO_COORDINATES = new ArrayList<>();
   private static final Logger sLog = LoggerFactory.getLogger(AbrpConsumptionService.class.getSimpleName());
+
+  static {
+    //add your gps simulation here
+    DEMO_COORDINATES.add(new Location(0f, 0f, 0f));
+  }
+
   private final IBinder mBinder = new AbrpConsumptionBinder();
+  ScheduledFuture<?> mScheduledFuture = null;
   private SharedPreferences mSharedPreferences;
   private ArrayList<Entry> mEstimatedSocValues;
   private ArrayList<Entry> mHeightValues;
@@ -83,8 +91,8 @@ public class AbrpConsumptionService extends Service implements IRoutePlan {
     mSharedPreferences = getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE);
     registerReceiver(mNaviGpsReceiver, new IntentFilter(ACTION_GPS_CHANGED));
     mGreenCarManager = GreenCarManager.getInstance(getApplicationContext());
-    mScheduledExecutorService = Executors.newScheduledThreadPool(1);
     mRoutePlan = RoutePlan.getInstance();
+    mRoutePlan.addListener(this);
   }
 
   @Override
@@ -96,7 +104,10 @@ public class AbrpConsumptionService extends Service implements IRoutePlan {
 
   @Override
   public int onStartCommand(Intent intent, int flags, int startId) {
-    mRoutePlan.addListener(this);
+    if (mScheduledFuture != null) {
+      mScheduledFuture.cancel(true);
+    }
+    mScheduledExecutorService = Executors.newScheduledThreadPool(1);
     mRoutePlan.requestPlan(mSharedPreferences.getString(PREFERENCES_TOKEN, null));
     return START_NOT_STICKY;
   }
@@ -109,10 +120,14 @@ public class AbrpConsumptionService extends Service implements IRoutePlan {
     mHeightValues = new ArrayList<>();
     mRouteLocations = new ArrayList<>();
     mRealSocValues = new ArrayList<>();
-    double totalDist = Math.ceil(r.getTotalDist() / 1000.0);
+    double totalDist = r.getSteps().get(0).getPath().get(0).get(pi.getRemainingDist()); //very ugly but departure_dist is in m and remaining_dist is in km
     for (Step step : r.getSteps()) {
       if (step.getPath() == null) {
-        continue;
+        //last step is target and has no path
+        mHeightValues.add(new Entry((float) totalDist, mHeightValues.get(mHeightValues.size() - 1).getY())); //since we don't have elevation for the last step reuse the last one
+        mEstimatedSocValues.add(new Entry((float) totalDist, step.getArrivalPerc()));
+        mRouteLocations.add(new Location(step.getLat(), step.getLon(), mHeightValues.get(mHeightValues.size() - 1).getY(), totalDist));
+        break;
       }
       for (List<Double> path : step.getPath()) {
         double elevation = path.get(pi.getElevation());
@@ -120,14 +135,14 @@ public class AbrpConsumptionService extends Service implements IRoutePlan {
         double remainingDist = path.get(pi.getRemainingDist());
         mHeightValues.add(new Entry((float) (totalDist - remainingDist), (float) elevation));
         mEstimatedSocValues.add(new Entry((float) (totalDist - remainingDist), (float) soc));
-        mRouteLocations.add(new Location(path.get(pi.getLat()), path.get(pi.getLon()), elevation, totalDist - remainingDist));
+        mRouteLocations.add(new Location(path.get(pi.getLat()), path.get(pi.getLon()), elevation, (totalDist - remainingDist) * 1000));
       }
     }
 
     for (IAbrpConsumptionService i : mListeners) {
       i.setChartData(mHeightValues, mEstimatedSocValues, mRealSocValues);
     }
-    mScheduledExecutorService.scheduleWithFixedDelay(new RealSocWatcher(mGreenCarManager), INTERVAL_SEND_UPDATE, INTERVAL_SEND_UPDATE, TimeUnit.MILLISECONDS);
+    mScheduledFuture = mScheduledExecutorService.scheduleWithFixedDelay(new RealSocWatcher(mGreenCarManager), 1000L, 1000L, TimeUnit.MILLISECONDS);
   }
 
   @Override
@@ -143,18 +158,19 @@ public class AbrpConsumptionService extends Service implements IRoutePlan {
     mListeners.remove(listener);
   }
 
-  private Location getClosestLocation(Location currentLocation) {
-    double closest = Double.MAX_VALUE;
-    Location closestLocation = null;
-    for (Location l : mRouteLocations) {
-      Location pl = l.calcDistance(currentLocation);
-      if (pl.getDistance() < closest) {
-        closest = pl.getDistance();
-        closestLocation = pl;
+  private int getClosestLocation(Location currentLocation) {
+    float closest = Float.MAX_VALUE;
+    int closestIndex = -1;
+    for (int i = 0; i < mRouteLocations.size(); i++) {
+      float distance = mRouteLocations.get(i).getDistance(currentLocation);
+      if (distance < closest) {
+        closest = distance;
+        closestIndex = i;
       }
     }
-    sLog.info("closest distance: " + closest + " obj: [" + closestLocation.toString() + "]");
-    return closestLocation;
+
+    sLog.info("closest distance: " + closest + " obj: [" + mRouteLocations.get(closestIndex).toString() + "]");
+    return closestIndex;
   }
 
   public interface IAbrpConsumptionService {
@@ -165,16 +181,41 @@ public class AbrpConsumptionService extends Service implements IRoutePlan {
 
   private class RealSocWatcher implements Runnable {
     private GreenCarManager mGreenCarManager;
+    private int lastRoutePath;
+    private int lastDemo = -1;
 
     public RealSocWatcher(GreenCarManager greenCarManager) {
       this.mGreenCarManager = greenCarManager;
+      this.lastRoutePath = getClosestLocation(DEMO_COORDINATES.get(0)/*mCurrentLocation*/);
     }
 
     @Override
     public void run() {
-      int soc = mGreenCarManager.getBatteryChargePersent();
-      Location closest = getClosestLocation(mCurrentLocation);
-      int x = (int) Math.floor(closest.getDistanceFromStart() + closest.getDistance());
+      //int soc = mGreenCarManager.getBatteryChargePersent();
+      int soc = 94 - this.lastRoutePath;
+      lastDemo++;
+      if (lastDemo == DEMO_COORDINATES.size()) {
+        mScheduledExecutorService.shutdownNow();
+      }
+      Location currentLocation = DEMO_COORDINATES.get(lastDemo); /*mCurrentLocation*/
+
+      if (mRouteLocations.size() != this.lastRoutePath + 1) {
+        float nextDistance = mRouteLocations.get(this.lastRoutePath + 1).getDistance(currentLocation);
+        if (nextDistance < 25f) {
+          this.lastRoutePath++;
+        }
+      }
+
+      Location closest = mRouteLocations.get(this.lastRoutePath);
+      float distance = closest.getDistance(currentLocation);
+
+      float x = (float) Math.floor((closest.getDistanceFromStart() + distance)) / 1000f;
+      if (mRealSocValues.size() > 0) {
+        Entry lastRealSoc = mRealSocValues.get(mRealSocValues.size() - 1);
+        if (lastRealSoc.getX() > x) {
+          x = lastRealSoc.getX();
+        }
+      }
       boolean addNew = true;
       for (Entry s : mRealSocValues) {
         if (s.getX() == x) {
@@ -185,10 +226,6 @@ public class AbrpConsumptionService extends Service implements IRoutePlan {
       }
       if (addNew) {
         mRealSocValues.add(new Entry(x, soc));
-        if (mRealSocValues.size() == 1) {
-          //add second value to get a line drawn
-          mRealSocValues.add(new Entry(x + 1, soc));
-        }
       }
       for (IAbrpConsumptionService i : mListeners) {
         i.updateChartData(mRealSocValues);
