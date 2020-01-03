@@ -43,6 +43,7 @@ import static g4rb4g3.at.abrptransmitter.Constants.PREFERENCES_NAME;
 import static g4rb4g3.at.abrptransmitter.Constants.PREFERENCES_TOKEN;
 
 public class AbrpConsumptionService extends Service implements IRoutePlan {
+  private static final boolean DEMO_MODE = true;
   private static final ArrayList<Location> DEMO_COORDINATES = new ArrayList<>();
   private static final Logger sLog = LoggerFactory.getLogger(AbrpConsumptionService.class.getSimpleName());
 
@@ -63,6 +64,8 @@ public class AbrpConsumptionService extends Service implements IRoutePlan {
   private ScheduledExecutorService mScheduledExecutorService;
   private RoutePlan mRoutePlan;
   private ArrayList<IAbrpConsumptionService> mListeners = new ArrayList<>();
+  private int mClosestLocationIndex = -1;
+  private Location mClosestLocation = null;
   private BroadcastReceiver mNaviGpsReceiver = new BroadcastReceiver() {
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -70,8 +73,11 @@ public class AbrpConsumptionService extends Service implements IRoutePlan {
       double lon = intent.getDoubleExtra(EXTRA_LON, 0);
       double alt = intent.getDoubleExtra(EXTRA_ALT, 0);
       mCurrentLocation = new Location(lat, lon, alt);
+
+      updateClosestLocation();
     }
   };
+  private int lastDemo = -1;
 
   @Nullable
   @Override
@@ -89,15 +95,20 @@ public class AbrpConsumptionService extends Service implements IRoutePlan {
     startForeground(NOTIFICATION_ID_ABRPCONSUMPTIONSERVICE, notification);
 
     mSharedPreferences = getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE);
-    registerReceiver(mNaviGpsReceiver, new IntentFilter(ACTION_GPS_CHANGED));
     mGreenCarManager = GreenCarManager.getInstance(getApplicationContext());
     mRoutePlan = RoutePlan.getInstance();
     mRoutePlan.addListener(this);
+
+    if (!DEMO_MODE) {
+      registerReceiver(mNaviGpsReceiver, new IntentFilter(ACTION_GPS_CHANGED));
+    }
   }
 
   @Override
   public void onDestroy() {
-    unregisterReceiver(mNaviGpsReceiver);
+    if (!DEMO_MODE) {
+      unregisterReceiver(mNaviGpsReceiver);
+    }
     mRoutePlan.removeListener(this);
     stopForeground(true);
   }
@@ -158,19 +169,42 @@ public class AbrpConsumptionService extends Service implements IRoutePlan {
     mListeners.remove(listener);
   }
 
-  private int getClosestLocation(Location currentLocation) {
+  private void initClosestLocation() {
     float closest = Float.MAX_VALUE;
     int closestIndex = -1;
     for (int i = 0; i < mRouteLocations.size(); i++) {
-      float distance = mRouteLocations.get(i).getDistance(currentLocation);
+      float distance = mRouteLocations.get(i).getDistance(mCurrentLocation);
       if (distance < closest) {
         closest = distance;
         closestIndex = i;
       }
     }
 
+    mClosestLocationIndex = closestIndex;
+    mClosestLocation = mRouteLocations.get(closestIndex);
     sLog.info("closest distance: " + closest + " obj: [" + mRouteLocations.get(closestIndex).toString() + "]");
-    return closestIndex;
+  }
+
+  private void updateClosestLocation() {
+    if (mClosestLocation == null) {
+      return;
+    }
+    if (mRouteLocations.size() != mClosestLocationIndex + 1) {
+      float nextDistance = mRouteLocations.get(mClosestLocationIndex + 1).getDistance(mCurrentLocation);
+      if (nextDistance < 25f) {
+        mClosestLocationIndex++;
+        mClosestLocation = mRouteLocations.get(mClosestLocationIndex);
+      }
+    }
+  }
+
+  private void updateDemoLocation() {
+    lastDemo++;
+    if (lastDemo == DEMO_COORDINATES.size()) {
+      mScheduledFuture.cancel(true);
+    }
+    mCurrentLocation = DEMO_COORDINATES.get(lastDemo);
+    updateClosestLocation();
   }
 
   public interface IAbrpConsumptionService {
@@ -181,35 +215,22 @@ public class AbrpConsumptionService extends Service implements IRoutePlan {
 
   private class RealSocWatcher implements Runnable {
     private GreenCarManager mGreenCarManager;
-    private int lastRoutePath;
-    private int lastDemo = -1;
 
     public RealSocWatcher(GreenCarManager greenCarManager) {
       this.mGreenCarManager = greenCarManager;
-      this.lastRoutePath = getClosestLocation(DEMO_COORDINATES.get(0)/*mCurrentLocation*/);
+      initClosestLocation();
     }
 
     @Override
     public void run() {
-      //int soc = mGreenCarManager.getBatteryChargePersent();
-      int soc = 94 - this.lastRoutePath;
-      lastDemo++;
-      if (lastDemo == DEMO_COORDINATES.size()) {
-        mScheduledExecutorService.shutdownNow();
+      int soc = mGreenCarManager.getBatteryChargePersent();
+      if (DEMO_MODE) {
+        soc = 94 - mClosestLocationIndex;
+        updateDemoLocation();
       }
-      Location currentLocation = DEMO_COORDINATES.get(lastDemo); /*mCurrentLocation*/
+      float distance = mClosestLocation.getDistance(mCurrentLocation);
 
-      if (mRouteLocations.size() != this.lastRoutePath + 1) {
-        float nextDistance = mRouteLocations.get(this.lastRoutePath + 1).getDistance(currentLocation);
-        if (nextDistance < 25f) {
-          this.lastRoutePath++;
-        }
-      }
-
-      Location closest = mRouteLocations.get(this.lastRoutePath);
-      float distance = closest.getDistance(currentLocation);
-
-      float x = (float) Math.floor((closest.getDistanceFromStart() + distance)) / 1000f;
+      float x = (float) Math.floor((mClosestLocation.getDistanceFromStart() + distance)) / 1000f;
       if (mRealSocValues.size() > 0) {
         Entry lastRealSoc = mRealSocValues.get(mRealSocValues.size() - 1);
         if (lastRealSoc.getX() > x) {
