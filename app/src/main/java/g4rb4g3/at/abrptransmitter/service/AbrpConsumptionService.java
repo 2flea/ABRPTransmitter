@@ -163,7 +163,9 @@ public class AbrpConsumptionService extends Service implements IRoutePlan {
 
   public void addListener(IAbrpConsumptionService listener) {
     mListeners.add(listener);
-    listener.setChartData(mHeightValues, mEstimatedSocValues, mRealSocValues);
+    if (mHeightValues != null) {
+      listener.setChartData(mHeightValues, mEstimatedSocValues, mRealSocValues);
+    }
   }
 
   public void removeListener(IAbrpConsumptionService listener) {
@@ -219,7 +221,7 @@ public class AbrpConsumptionService extends Service implements IRoutePlan {
 
     public RealSocWatcher(GreenCarManager greenCarManager) {
       this.mGreenCarManager = greenCarManager;
-      if(DEMO_MODE) {
+      if (DEMO_MODE) {
         updateDemoLocation();
       }
       initClosestLocation();
