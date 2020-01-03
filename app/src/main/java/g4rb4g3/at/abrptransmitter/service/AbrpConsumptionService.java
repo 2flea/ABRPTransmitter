@@ -163,6 +163,7 @@ public class AbrpConsumptionService extends Service implements IRoutePlan {
 
   public void addListener(IAbrpConsumptionService listener) {
     mListeners.add(listener);
+    listener.setChartData(mHeightValues, mEstimatedSocValues, mRealSocValues);
   }
 
   public void removeListener(IAbrpConsumptionService listener) {
