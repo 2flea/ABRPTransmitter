@@ -137,7 +137,7 @@ public class AbrpConsumptionService extends Service implements IRoutePlan {
         //last step is target and has no path
         mHeightValues.add(new Entry((float) totalDist, mHeightValues.get(mHeightValues.size() - 1).getY())); //since we don't have elevation for the last step reuse the last one
         mEstimatedSocValues.add(new Entry((float) totalDist, step.getArrivalPerc()));
-        mRouteLocations.add(new Location(step.getLat(), step.getLon(), mHeightValues.get(mHeightValues.size() - 1).getY(), totalDist));
+        mRouteLocations.add(new Location(step.getLat(), step.getLon(), mHeightValues.get(mHeightValues.size() - 1).getY(), totalDist * 1000));
         break;
       }
       for (List<Double> path : step.getPath()) {
