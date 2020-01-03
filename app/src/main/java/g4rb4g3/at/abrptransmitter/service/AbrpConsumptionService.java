@@ -218,6 +218,9 @@ public class AbrpConsumptionService extends Service implements IRoutePlan {
 
     public RealSocWatcher(GreenCarManager greenCarManager) {
       this.mGreenCarManager = greenCarManager;
+      if(DEMO_MODE) {
+        updateDemoLocation();
+      }
       initClosestLocation();
     }
 
